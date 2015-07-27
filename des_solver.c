@@ -5,6 +5,8 @@
 #include <openssl/crypto.h>
 #include <string.h>
 
+int break_loop = 0;
+
 static const unsigned char odd_parity[256] = {
     1, 1, 2, 2, 4, 4, 7, 7, 8, 8, 11, 11, 13, 13, 14, 14,
     16, 16, 19, 19, 21, 21, 22, 22, 25, 25, 26, 26, 28, 28, 31, 31,
@@ -46,6 +48,16 @@ void print_DES_cblock(char *head, DES_cblock *key){
 int des_solver(DES_cblock *result_key, int stage, DES_cblock *enc_m, DES_cblock *dec_m){
   DES_cblock stage_key;
 
+  int local_flag = 0;
+#ifdef _OPENMP
+#pragma omp atomic read
+#endif
+    local_flag = break_loop;
+    
+    if(local_flag == 1) {
+      return -1;
+    }
+
   memcpy(&stage_key, result_key,sizeof(DES_cblock));
   int i;
 
@@ -57,7 +69,7 @@ int des_solver(DES_cblock *result_key, int stage, DES_cblock *enc_m, DES_cblock 
 
     if(stage < (sizeof(DES_cblock)-1)){
       int res = des_solver(&stage_key, stage + 1, enc_m, dec_m);
-      if(res == 1){
+      if(res == 0){
 	break;
       }
     }
@@ -75,61 +87,70 @@ int des_solver(DES_cblock *result_key, int stage, DES_cblock *enc_m, DES_cblock 
   }
   if(i > 0xfe){
     // key not found
-    return 0;
+    return -1;
   }
   // key found
   memcpy(result_key, &stage_key, sizeof(DES_cblock));
-  return 1;
+  return 0;
 }
 
 int main(void){
-  DES_cblock dec_mes = "hello";
-  DES_cblock correct_key;
+  DES_cblock mes = {0,0,0,0,0,0,0,0};
+  DES_cblock correct_key = {1,1,1,1,1,1,1,1};  // for test
   DES_cblock enc_mes;
   DES_cblock key = {0,0,0,0,0,0,0,0};
   DES_key_schedule schedule = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
+  strcpy(mes, "hello");
+  memset(&schedule,0,sizeof(DES_key_schedule));
 
   // make chiper text
   DES_random_key(&correct_key);
   DES_set_key_checked(&correct_key, &schedule);
-  DES_ecb_encrypt(&enc_mes, &dec_mes, &schedule, DES_ENCRYPT);
+  DES_ecb_encrypt(&mes, &enc_mes, &schedule, DES_ENCRYPT);
 
-  print_DES_cblock("message: ", &dec_mes);
+  print_DES_cblock("message: ", &mes);
   print_DES_cblock("Enc Key: ", &correct_key);
   print_DES_cblock("chiper text: ", &enc_mes);
 
-  //  int break_loop = 0;
   // 探索開始
 #ifdef _OPENMP
 #pragma omp parallel for
 #endif
   for(int i=0;i<=0xfe;i+=2){
-/*     int local_flag; */
-/* #ifdef _OPENMP */
-/* #pragma omp atomic read */
-/* #endif */
-/*     local_flag = break_loop; */
-/*     if(local_flag) continue; */
+    int local_flag;
+#ifdef _OPENMP
+#pragma omp atomic read
+#endif
+    local_flag = break_loop;
+    
+    if(local_flag == 1) {
+      //      printf("local_flag = %d\n",local_flag);
+      continue;
+    }
     
     ((unsigned char *)key)[0] = i;
     // set parity
     ((unsigned char *)key)[0] = odd_parity[key[0]];
     
-    int res = des_solver(&key, 1, &enc_mes, &dec_mes);
+    int res = des_solver(&key, 1, &enc_mes, &mes);
 
-#ifdef _OPENMP
-#pragma omp cancel for if(res)
-#endif
-
-/*     if(res){ */
 /* #ifdef _OPENMP */
-/* #pragma omp atomic write */
+/* #pragma omp cancel for if(res) */
 /* #endif */
-/*       break_loop = 1; */
-/*     } */
+
+    if(res == 0){
+#ifdef _OPENMP
+#pragma omp atomic write
+#endif
+      break_loop = 1;
+      //      printf("res = %d\n",res);
+      //      printf("break_loop = %d\n",break_loop);
+    }
     
   }
+
+    //  printf("end\n");
   print_DES_cblock("solve Key: ", &key);
   return 0;
 }
